@@ -1,0 +1,23 @@
+{
+  "env": {
+    "commonjs": true,
+    "es2021": true
+  },
+  "globals": {
+    "jest": true
+  },
+  "extends": [
+    "eslint:recommended",
+    "airbnb"
+  ],
+  "parserOptions": {
+    "ecmaVersion": "latest"
+  },
+  "rules": {
+    "class-methods-use-this": "warn",
+    "no-console": "off",
+    "no-use-before-define": "off",
+    "no-unused-vars": "warn",
+    "max-len": ["error", { "code": 120 }]
+  }
+}
