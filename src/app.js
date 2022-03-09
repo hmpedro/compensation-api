@@ -88,6 +88,7 @@ app.post('/jobs/:job_id/pay', getProfile, async (req, res) => {
   // const { sequelize } = req.app.get('sequelize');
   const userProfile = req.profile;
   const { job_id: jobId } = req.params;
+
   if (userProfile.type !== 'client') {
     return res.status(400).send('Invalid user type').end();
   }
@@ -115,6 +116,10 @@ app.post('/jobs/:job_id/pay', getProfile, async (req, res) => {
       id: jobId,
     },
   });
+
+  if (job.paid) {
+    return res.status(400).send('Job already paid').end();
+  }
 
   if (job.price > userProfile.balance) {
     return res.status(400).send('Insufficient balance').end();
@@ -151,6 +156,14 @@ app.post('/jobs/:job_id/pay', getProfile, async (req, res) => {
         { balance: contractorProfile.balance + job.price },
         { where: { id: contractorProfile.id } },
         { transaction },
+      );
+
+      await Job.update(
+        {
+          paid: true,
+          paymentDate: new Date(),
+        },
+        { where: { id: jobId } },
       );
     });
     // Committed
