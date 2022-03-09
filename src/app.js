@@ -1,8 +1,9 @@
 const express = require('express');
 const bodyParser = require('body-parser');
 const { Op } = require('sequelize');
-const { sequelize } = require('./model');
+const { constants: httpConstants } = require('http2');
 const { getProfile } = require('./middleware/getProfile');
+const { sequelize } = require('./model');
 
 const app = express();
 app.use(bodyParser.json());
@@ -77,6 +78,89 @@ app.get('/jobs/unpaid', getProfile, async (req, res) => {
   });
   if (!contract) return res.status(404).end();
   res.json(contract);
+});
+
+/**
+ * @returns Pay for a job
+ */
+app.post('/jobs/:job_id/pay', getProfile, async (req, res) => {
+  const { Contract, Job, Profile } = req.app.get('models');
+  // const { sequelize } = req.app.get('sequelize');
+  const userProfile = req.profile;
+  const { job_id: jobId } = req.params;
+  if (userProfile.type !== 'client') {
+    return res.status(400).send('Invalid user type').end();
+  }
+
+  const contract = await Contract.findOne({
+    where: {
+      ClientId: userProfile.id,
+    },
+    include: [
+      {
+        model: Job,
+        where: {
+          id: jobId,
+        },
+      },
+    ],
+  });
+
+  if (!contract) {
+    return res.status(400).send('Invalid client for job').end();
+  }
+
+  const job = await Job.findOne({
+    where: {
+      id: jobId,
+    },
+  });
+
+  if (job.price > userProfile.balance) {
+    return res.status(400).send('Insufficient balance').end();
+  }
+
+  try {
+    await sequelize.transaction(async (transaction) => {
+      await Profile.update(
+        { balance: userProfile.balance - job.price },
+        { where: { id: userProfile.id } },
+        { transaction },
+      );
+
+      const contractorProfile = await Profile.findOne({
+        include: [
+          {
+            model: Contract,
+            as: 'Contractor',
+            required: true,
+            include: [
+              {
+                model: Job,
+                required: true,
+                where: {
+                  id: job.id,
+                },
+              },
+            ],
+          },
+        ],
+      }, { transaction });
+
+      await Profile.update(
+        { balance: contractorProfile.balance + job.price },
+        { where: { id: contractorProfile.id } },
+        { transaction },
+      );
+    });
+    // Committed
+  } catch (err) {
+    // Rolled back
+    console.error(err);
+    return res.status(500).send('Something went wrong, try again later').end();
+  }
+
+  res.status(httpConstants.HTTP_STATUS_NO_CONTENT).end();
 });
 
 module.exports = app;
