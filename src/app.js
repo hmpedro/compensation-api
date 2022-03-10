@@ -176,4 +176,33 @@ app.post('/jobs/:job_id/pay', getProfile, async (req, res) => {
   res.status(httpConstants.HTTP_STATUS_NO_CONTENT).end();
 });
 
+/**
+ * @returns Most profitable profession for period
+ */
+app.get('/admin/best-profession', getProfile, async (req, res) => {
+  const innerSequelize = req.app.get('sequelize');
+  const { start, end } = req.query;
+
+  let rangeQuery = '';
+  if (start && end) {
+    const startSql = new Date(start).toISOString();
+    const endSql = new Date(end).toISOString();
+    rangeQuery = `AND j.paymentDate >= "${startSql}" AND j.paymentDate <= "${endSql}"`;
+  }
+
+  const [mostProfitableProfession] = await innerSequelize.query(`
+      SELECT p.profession, SUM(j.price) AS profit
+      FROM Profiles p
+       INNER JOIN Contracts C on p.id = C.ClientId
+       inner join Jobs j on C.id = j.ContractId
+      WHERE j.paid = true
+      ${rangeQuery}
+      GROUP BY p.profession
+      ORDER BY profit DESC
+      limit 1`);
+
+  if (!mostProfitableProfession) return res.status(404).end();
+  res.json(mostProfitableProfession);
+});
+
 module.exports = app;
