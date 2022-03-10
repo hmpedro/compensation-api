@@ -193,13 +193,44 @@ app.get('/admin/best-profession', getProfile, async (req, res) => {
   const [mostProfitableProfession] = await innerSequelize.query(`
       SELECT p.profession, SUM(j.price) AS profit
       FROM Profiles p
+       INNER JOIN Contracts C on p.id = C.ContractorId
+       INNER join Jobs j on C.id = j.ContractId
+      WHERE j.paid = true
+      ${rangeQuery}
+      GROUP BY p.profession
+      ORDER BY profit DESC
+      LIMIT 1`);
+
+  if (!mostProfitableProfession) return res.status(404).end();
+  res.json(mostProfitableProfession);
+});
+
+/**
+ * @returns Most profitable profession for period
+ */
+app.get('/admin/best-clients', getProfile, async (req, res) => {
+  const innerSequelize = req.app.get('sequelize');
+  const { start, end, limit = 2 } = req.query;
+
+  let rangeQuery = '';
+  if (start && end) {
+    const startSql = new Date(start).toISOString();
+    const endSql = new Date(end).toISOString();
+    rangeQuery = `AND j.paymentDate >= "${startSql}" AND j.paymentDate <= "${endSql}"`;
+  }
+
+  const [mostProfitableProfession] = await innerSequelize.query(`
+      SELECT p.id, p.firstName || ' ' || p.lastName AS fullName, SUM(j.price) AS totalPayments
+      FROM Profiles p
        INNER JOIN Contracts C on p.id = C.ClientId
        inner join Jobs j on C.id = j.ContractId
       WHERE j.paid = true
       ${rangeQuery}
       GROUP BY p.profession
-      ORDER BY profit DESC
-      limit 1`);
+      ORDER BY totalPayments DESC
+      LIMIT :limit`, {
+    replacements: { limit },
+  });
 
   if (!mostProfitableProfession) return res.status(404).end();
   res.json(mostProfitableProfession);
