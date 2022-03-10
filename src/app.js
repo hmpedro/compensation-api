@@ -177,12 +177,108 @@ app.post('/jobs/:job_id/pay', getProfile, async (req, res) => {
 });
 
 /**
+ * @returns  Deposits money into the balance of a client
+ */
+app.post('/balances/deposit/:userId', getProfile, async (req, res) => {
+  const { Contract, Job, Profile } = req.app.get('models');
+  // const { sequelize } = req.app.get('sequelize');
+  const userProfile = req.profile;
+  const { job_id: jobId } = req.params;
+
+  if (userProfile.type !== 'client') {
+    return res.status(400).send('Invalid user type').end();
+  }
+
+  const contract = await Contract.findOne({
+    where: {
+      ClientId: userProfile.id,
+    },
+    include: [
+      {
+        model: Job,
+        where: {
+          id: jobId,
+        },
+      },
+    ],
+  });
+
+  if (!contract) {
+    return res.status(400).send('Invalid client for job').end();
+  }
+
+  const job = await Job.findOne({
+    where: {
+      id: jobId,
+    },
+  });
+
+  if (job.paid) {
+    return res.status(400).send('Job already paid').end();
+  }
+
+  if (job.price > userProfile.balance) {
+    return res.status(400).send('Insufficient balance').end();
+  }
+
+  try {
+    await sequelize.transaction(async (transaction) => {
+      await Profile.update(
+        { balance: userProfile.balance - job.price },
+        { where: { id: userProfile.id } },
+        { transaction },
+      );
+
+      const contractorProfile = await Profile.findOne({
+        include: [
+          {
+            model: Contract,
+            as: 'Contractor',
+            required: true,
+            include: [
+              {
+                model: Job,
+                required: true,
+                where: {
+                  id: job.id,
+                },
+              },
+            ],
+          },
+        ],
+      }, { transaction });
+
+      await Profile.update(
+        { balance: contractorProfile.balance + job.price },
+        { where: { id: contractorProfile.id } },
+        { transaction },
+      );
+
+      await Job.update(
+        {
+          paid: true,
+          paymentDate: new Date(),
+        },
+        { where: { id: jobId } },
+      );
+    });
+    // Committed
+  } catch (err) {
+    // Rolled back
+    console.error(err);
+    return res.status(500).send('Something went wrong, try again later').end();
+  }
+
+  res.status(httpConstants.HTTP_STATUS_NO_CONTENT).end();
+});
+
+/**
  * @returns Most profitable profession for period
  */
 app.get('/admin/best-profession', getProfile, async (req, res) => {
-  const innerSequelize = req.app.get('sequelize');
+  const { Contract, Job, Profile } = req.app.get('models');
   const { start, end } = req.query;
-
+  /*
   let rangeQuery = '';
   if (start && end) {
     const startSql = new Date(start).toISOString();
@@ -190,7 +286,7 @@ app.get('/admin/best-profession', getProfile, async (req, res) => {
     rangeQuery = `AND j.paymentDate >= "${startSql}" AND j.paymentDate <= "${endSql}"`;
   }
 
-  const [mostProfitableProfession] = await innerSequelize.query(`
+  const [mostProfitableProfession] = await sequelize.query(`
       SELECT p.profession, SUM(j.price) AS profit
       FROM Profiles p
        INNER JOIN Contracts C on p.id = C.ContractorId
@@ -200,18 +296,57 @@ app.get('/admin/best-profession', getProfile, async (req, res) => {
       GROUP BY p.profession
       ORDER BY profit DESC
       LIMIT 1`);
+*/
+
+  const mostProfitableProfession = await Job.findOne({
+    attributes: [
+      [sequelize.fn('sum', sequelize.col('price')), 'profit'],
+    ],
+    where: {
+      paid: true,
+      ...(start && end && {
+        paymentDate: {
+          [Op.gte]: start,
+          [Op.lte]: end,
+        },
+      }),
+    },
+    group: 'Contract.Contractor.profession',
+    order: [
+      [sequelize.col('profit'), 'DESC'],
+    ],
+    include: [
+      {
+        model: Contract,
+        required: true,
+        include: [
+          {
+            model: Profile,
+            as: 'Contractor',
+            attributes: [
+              'profession',
+            ],
+            required: true,
+          },
+        ],
+      },
+    ],
+  });
 
   if (!mostProfitableProfession) return res.status(404).end();
-  res.json(mostProfitableProfession);
+  res.json({
+    profession: mostProfitableProfession.Contract.Contractor.profession,
+    profit: mostProfitableProfession.get('profit'),
+  });
 });
 
 /**
- * @returns Most profitable profession for period
+ * @returns List of clients with the greatest payments for period
  */
 app.get('/admin/best-clients', getProfile, async (req, res) => {
-  const innerSequelize = req.app.get('sequelize');
+  const { Contract, Job, Profile } = req.app.get('models');
   const { start, end, limit = 2 } = req.query;
-
+  /*
   let rangeQuery = '';
   if (start && end) {
     const startSql = new Date(start).toISOString();
@@ -219,21 +354,56 @@ app.get('/admin/best-clients', getProfile, async (req, res) => {
     rangeQuery = `AND j.paymentDate >= "${startSql}" AND j.paymentDate <= "${endSql}"`;
   }
 
-  const [mostProfitableProfession] = await innerSequelize.query(`
+  const [mostPayableClient] = await sequelize.query(`
       SELECT p.id, p.firstName || ' ' || p.lastName AS fullName, SUM(j.price) AS totalPayments
       FROM Profiles p
        INNER JOIN Contracts C on p.id = C.ClientId
        inner join Jobs j on C.id = j.ContractId
       WHERE j.paid = true
       ${rangeQuery}
-      GROUP BY p.profession
       ORDER BY totalPayments DESC
       LIMIT :limit`, {
     replacements: { limit },
   });
+  */
 
-  if (!mostProfitableProfession) return res.status(404).end();
-  res.json(mostProfitableProfession);
+  const mostPayableClients = await Job.findAll({
+    attributes: [
+      [sequelize.fn('sum', sequelize.col('price')), 'totalPayments'],
+    ],
+    where: {
+      paid: true,
+      ...(start && end && {
+        paymentDate: {
+          [Op.gte]: start,
+          [Op.lte]: end,
+        },
+      }),
+    },
+    order: [
+      [sequelize.col('totalPayments'), 'DESC'],
+    ],
+    include: [
+      {
+        model: Contract,
+        required: true,
+        include: [
+          {
+            model: Profile,
+            as: 'Client',
+            required: true,
+          },
+        ],
+      },
+    ],
+  });
+
+  if (!mostPayableClients) return res.status(404).end();
+  res.json(mostPayableClients.map((obj) => ({
+    id: obj.Contract.Client.id,
+    fullName: [obj.Contract.Client.firstName, obj.Contract.Client.lastName].join(' '),
+    totalPayments: obj.get('totalPayments'),
+  })));
 });
 
 module.exports = app;
