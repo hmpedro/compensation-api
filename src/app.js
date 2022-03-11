@@ -85,7 +85,7 @@ app.get('/jobs/unpaid', getProfile, async (req, res) => {
  */
 app.post('/jobs/:job_id/pay', getProfile, async (req, res) => {
   const { Contract, Job, Profile } = req.app.get('models');
-  // const { sequelize } = req.app.get('sequelize');
+  const { innerSequelize } = req.app.get('sequelize');
   const userProfile = req.profile;
   const { job_id: jobId } = req.params;
 
@@ -181,91 +181,67 @@ app.post('/jobs/:job_id/pay', getProfile, async (req, res) => {
  */
 app.post('/balances/deposit/:userId', getProfile, async (req, res) => {
   const { Contract, Job, Profile } = req.app.get('models');
-  // const { sequelize } = req.app.get('sequelize');
-  const userProfile = req.profile;
-  const { job_id: jobId } = req.params;
-
-  if (userProfile.type !== 'client') {
-    return res.status(400).send('Invalid user type').end();
-  }
-
-  const contract = await Contract.findOne({
-    where: {
-      ClientId: userProfile.id,
-    },
-    include: [
-      {
-        model: Job,
-        where: {
-          id: jobId,
-        },
-      },
-    ],
-  });
-
-  if (!contract) {
-    return res.status(400).send('Invalid client for job').end();
-  }
-
-  const job = await Job.findOne({
-    where: {
-      id: jobId,
-    },
-  });
-
-  if (job.paid) {
-    return res.status(400).send('Job already paid').end();
-  }
-
-  if (job.price > userProfile.balance) {
-    return res.status(400).send('Insufficient balance').end();
-  }
+  const { userId } = req.params;
+  const { deposit } = req.body;
 
   try {
     await sequelize.transaction(async (transaction) => {
-      await Profile.update(
-        { balance: userProfile.balance - job.price },
-        { where: { id: userProfile.id } },
-        { transaction },
-      );
+      const user = await Profile.findOne({
+        where: {
+          id: userId,
+        },
+        transaction,
+        lock: transaction.LOCK,
+      });
 
-      const contractorProfile = await Profile.findOne({
+      if (!user) {
+        const err = new Error('Invalid user id.');
+        err.status = 400;
+        throw err;
+      }
+
+      if (user.type !== 'client') {
+        const err = new Error('Only clients allowed.');
+        err.status = 400;
+        throw err;
+      }
+
+      const totalJobsToPay = await Job.sum('price', {
+        where: {
+          [Op.or]: [
+            { paid: false },
+            { paid: null },
+          ],
+        },
         include: [
           {
             model: Contract,
-            as: 'Contractor',
             required: true,
-            include: [
-              {
-                model: Job,
-                required: true,
-                where: {
-                  id: job.id,
-                },
-              },
-            ],
+            where: {
+              ClientId: user.id,
+            },
           },
         ],
-      }, { transaction });
+        transaction,
+      });
 
-      await Profile.update(
-        { balance: contractorProfile.balance + job.price },
-        { where: { id: contractorProfile.id } },
-        { transaction },
-      );
+      if ((deposit / totalJobsToPay) > 0.25) {
+        const err = new Error('Deposit value is higher then 25% of total jobs to pay.');
+        err.status = 400;
+        throw err;
+      }
 
-      await Job.update(
-        {
-          paid: true,
-          paymentDate: new Date(),
-        },
-        { where: { id: jobId } },
-      );
+      user.balance += deposit;
+      await user.save({ transaction });
     });
     // Committed
   } catch (err) {
     // Rolled back
     console.error(err);
+    if (err.status && err.message) {
+      return res.status(err.status).send(err.message).end();
+    }
+
     return res.status(500).send('Something went wrong, try again later').end();
   }
 
