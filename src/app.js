@@ -361,6 +361,7 @@ app.get('/admin/best-clients', getProfile, async (req, res) => {
        inner join Jobs j on C.id = j.ContractId
       WHERE j.paid = true
       ${rangeQuery}
+      GROUP BY p.id
       ORDER BY totalPayments DESC
       LIMIT :limit`, {
     replacements: { limit },
@@ -380,9 +381,11 @@ app.get('/admin/best-clients', getProfile, async (req, res) => {
         },
       }),
     },
+    group: 'Contract.Client.id',
     order: [
       [sequelize.col('totalPayments'), 'DESC'],
     ],
+    limit,
     include: [
       {
         model: Contract,
