@@ -55,10 +55,10 @@ app.get('/contracts', getProfile, async (req, res) => {
 app.get('/jobs/unpaid', getProfile, async (req, res) => {
   const { Contract, Job } = req.app.get('models');
   const userProfile = req.profile;
-  const contract = await Job.findAll({
+  const unpaidJobs = await Job.findAll({
     where: {
       [Op.or]: [
-        { paid: 'terminated' },
+        { paid: false },
         { paid: null },
       ],
     },
@@ -76,8 +76,8 @@ app.get('/jobs/unpaid', getProfile, async (req, res) => {
       },
     ],
   });
-  if (!contract) return res.status(404).end();
-  res.json(contract);
+  if (!unpaidJobs.length) return res.status(404).end();
+  res.json(unpaidJobs);
 });
 
 /**
@@ -85,17 +85,16 @@ app.get('/jobs/unpaid', getProfile, async (req, res) => {
  */
 app.post('/jobs/:job_id/pay', getProfile, async (req, res) => {
   const { Contract, Job, Profile } = req.app.get('models');
-  const { innerSequelize } = req.app.get('sequelize');
-  const userProfile = req.profile;
+  const clientProfile = req.profile;
   const { job_id: jobId } = req.params;
 
-  if (userProfile.type !== 'client') {
+  if (clientProfile.type !== 'client') {
     return res.status(400).send('Invalid user type').end();
   }
 
   const contract = await Contract.findOne({
     where: {
-      ClientId: userProfile.id,
+      ClientId: clientProfile.id,
     },
     include: [
       {
@@ -111,27 +110,30 @@ app.post('/jobs/:job_id/pay', getProfile, async (req, res) => {
     return res.status(400).send('Invalid client for job').end();
   }
 
-  const job = await Job.findOne({
-    where: {
-      id: jobId,
-    },
-  });
-
-  if (job.paid) {
-    return res.status(400).send('Job already paid').end();
-  }
-
-  if (job.price > userProfile.balance) {
-    return res.status(400).send('Insufficient balance').end();
-  }
-
   try {
     await sequelize.transaction(async (transaction) => {
-      await Profile.update(
-        { balance: userProfile.balance - job.price },
-        { where: { id: userProfile.id } },
-        { transaction },
-      );
+      const job = await Job.findOne({
+        where: {
+          id: jobId,
+        },
+        transaction,
+      });
+
+      if (job.paid) {
+        const err = new Error('Job already paid.');
+        err.status = 400;
+        throw err;
+      }
+
+      if (job.price > clientProfile.balance) {
+        const err = new Error('Insufficient balance.');
+        err.status = 400;
+        throw err;
+      }
+
+      // UPDATE CLIENT BALANCE
+      clientProfile.balance -= job.price;
+      await clientProfile.save({ transaction });
 
       const contractorProfile = await Profile.findOne({
         include: [
@@ -150,26 +152,24 @@ app.post('/jobs/:job_id/pay', getProfile, async (req, res) => {
             ],
           },
         ],
-      }, { transaction });
+        transaction,
+      });
 
-      await Profile.update(
-        { balance: contractorProfile.balance + job.price },
-        { where: { id: contractorProfile.id } },
-        { transaction },
-      );
+      contractorProfile.balance += job.price;
+      await contractorProfile.save({ transaction });
 
-      await Job.update(
-        {
-          paid: true,
-          paymentDate: new Date(),
-        },
-        { where: { id: jobId } },
-      );
+      job.paid = true;
+      job.paymentDate = new Date();
+      await job.save({ transaction });
     });
     // Committed
   } catch (err) {
     // Rolled back
     console.error(err);
+    if (err.status && err.message) {
+      return res.status(err.status).send(err.message).end();
+    }
+
     return res.status(500).send('Something went wrong, try again later').end();
   }
 
